@@ -5,19 +5,28 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define N 512 // Size of the grid (NxN)
-#define CELL_SIZE 1 // Size of each cell in pixels
+#define N 64 // Size of the grid (NxN)
+#define CELL_SIZE 10 // Size of each cell in pixels
 #define WINDOW_SIZE (N * CELL_SIZE)
+#define NUM_GENES 64
 
-__device__ int getCell(int* grid, int x, int y) {
-    return grid[y * N + x];
+struct Cell {
+    int alive; // Alive/Dead
+    int energy; // Energy level
+    int age; // Age
+    int genes[NUM_GENES]; // Array of genes
+    int currentActivity; // Current activity
+};
+
+__device__ int getCellAlive(Cell* grid, int x, int y) {
+    return grid[y * N + x].alive;
 }
 
-__device__ void setCell(int* grid, int x, int y, int value) {
-    grid[y * N + x] = value;
+__device__ void setCellAlive(Cell* grid, int x, int y, int value) {
+    grid[y * N + x].alive = value;
 }
 
-__global__ void gameOfLifeKernel(int* currentGrid, int* nextGrid) {
+__global__ void gameOfLifeKernel(Cell* currentGrid, Cell* nextGrid) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -28,30 +37,35 @@ __global__ void gameOfLifeKernel(int* currentGrid, int* nextGrid) {
                 if (i == 0 && j == 0) continue;
                 int neighborX = (x + i + N) % N;
                 int neighborY = (y + j + N) % N;
-                liveNeighbors += getCell(currentGrid, neighborX, neighborY);
+                liveNeighbors += getCellAlive(currentGrid, neighborX, neighborY);
             }
         }
 
-        int currentState = getCell(currentGrid, x, y);
-        int nextState = currentState;
-        if (currentState == 1) {
-            if (liveNeighbors < 2 || liveNeighbors > 3) nextState = 0;
+        Cell currentState = currentGrid[y * N + x];
+        Cell nextState = currentState;
+        if (currentState.alive == 1) {
+            if (currentState.age > 100) nextState.alive = 0;
+            if (liveNeighbors < 2 || liveNeighbors > 3) nextState.alive = 0;
+            nextState.age++;
+            nextState.energy--; // Example: reduce energy over time
         }
         else {
-            if (liveNeighbors == 3) nextState = 1;
+            if (liveNeighbors == 3) nextState.alive = 1;
+            nextState.age = 0;
+            nextState.energy = 100; // Example: reset energy on birth
         }
-        setCell(nextGrid, x, y, nextState);
+        nextGrid[y * N + x] = nextState;
     }
 }
 
-void renderGrid(SDL_Renderer* renderer, int* grid) {
+void renderGrid(SDL_Renderer* renderer, Cell* grid) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
 
     SDL_SetRenderDrawColor(renderer, 0, 255, 0, 255);
     for (int y = 0; y < N; ++y) {
         for (int x = 0; x < N; ++x) {
-            if (grid[y * N + x]) {
+            if (grid[y * N + x].alive) {
                 SDL_Rect cell;
                 cell.x = x * CELL_SIZE;
                 cell.y = y * CELL_SIZE;
@@ -66,16 +80,22 @@ void renderGrid(SDL_Renderer* renderer, int* grid) {
 }
 
 int main(int argc, char* argv[]) {
-    int* currentGrid;
-    int* nextGrid;
-    cudaMallocManaged(&currentGrid, N * N * sizeof(int));
-    cudaMallocManaged(&nextGrid, N * N * sizeof(int));
+    Cell* currentGrid;
+    Cell* nextGrid;
+    cudaMallocManaged(&currentGrid, N * N * sizeof(Cell));
+    cudaMallocManaged(&nextGrid, N * N * sizeof(Cell));
 
-    // Initialize the grid with a random pattern
+    // Initialize the grid with random pattern
     srand(time(NULL));
     for (int y = 0; y < N; ++y) {
         for (int x = 0; x < N; ++x) {
-            currentGrid[y * N + x] = rand() % 2;
+            currentGrid[y * N + x].alive = rand() % 2;
+            currentGrid[y * N + x].energy = rand() % 100;
+            currentGrid[y * N + x].age = rand() % 100;
+            currentGrid[y * N + x].currentActivity = rand() % 10;
+            for (int i = 0; i < NUM_GENES; ++i) {
+                currentGrid[y * N + x].genes[i] = rand() % 2;
+            }
         }
     }
 
@@ -121,7 +141,7 @@ int main(int argc, char* argv[]) {
         gameOfLifeKernel << <numBlocks, threadsPerBlock >> > (currentGrid, nextGrid);
         cudaDeviceSynchronize();
 
-        int* temp = currentGrid;
+        Cell* temp = currentGrid;
         currentGrid = nextGrid;
         nextGrid = temp;
 
