@@ -109,91 +109,9 @@ __global__ void cellularAutomatonKernel(Cell* currentGrid, Cell* nextGrid, curan
                 }
             }
 
-
-            int neighborX = 0;
-            int neighborY = 0;
-            switch (command)
-            {
-            case 8:
-                cell.energy += 25;
-                break;
-            case 9:
-                // Change activatedGene based on neighbor's status
-                neighborX = getNeighborX(x, cell.rotation);
-                neighborY = getNeighborY(y, cell.rotation);
-
-                if (neighborX >= 0 && neighborX < N && neighborY >= 0 && neighborY < N) {
-                    Cell neighborCell = getCell(currentGrid, neighborX, neighborY);
-                    if (neighborCell.type == 1) {
-                        if (genesAreSimilar(&cell, &neighborCell))
-                        {
-                            cell.activatedGene = cell.genes[(cell.activatedGene) % GENES_SIZE]; // Move to next gene
-                        }
-                        else
-                        {
-                            cell.activatedGene = cell.genes[(cell.activatedGene + 1) % GENES_SIZE]; // Move to next gene
-                        }
-                    }
-                    else {
-                        cell.activatedGene = cell.genes[(cell.activatedGene + 2) % GENES_SIZE]; // Skip next gene (wrap around)
-                    }
-                }
-                break;
-
-            case 10:
-                // Change rotation based on gene value
-                int geneValue = cell.genes[cell.activatedGene];
-                cell.rotation = (cell.rotation + geneValue) % 8;
-                cell.activatedGene = (cell.activatedGene + 1) % GENES_SIZE;
-                break;
-            case 11:
-                // Change activatedGene based on neighbor's status
-                neighborX = getNeighborX(x, cell.rotation);
-                neighborY = getNeighborY(y, cell.rotation);
-
-                if (neighborX >= 0 && neighborX < N && neighborY >= 0 && neighborY < N) {
-                    Cell neighborCell = getCell(currentGrid, neighborX, neighborY);
-                    if (neighborCell.type == 1) {
-                        if (neighborCell.energy > cell.genes[(cell.activatedGene) % GENES_SIZE] * MAX_ENERGY / COMMAND_NUMBER)
-                        {
-                            cell.activatedGene = cell.genes[(cell.activatedGene + 1) % GENES_SIZE]; // Move to next gene
-                        }
-                        else
-                        {
-                            cell.activatedGene = cell.genes[(cell.activatedGene + 2) % GENES_SIZE]; // Move to next gene
-                        }
-                    }
-                    else {
-                        cell.activatedGene = cell.genes[(cell.activatedGene + 3) % GENES_SIZE]; // Skip next gene (wrap around)
-                    }
-                }
-
-                break;
-            case 16:
-                cell.energy /= 9;
-                break;
-            case 17: // New attack command
-                int targetX = getNeighborX(x, cell.rotation);
-                int targetY = getNeighborY(y, cell.rotation);
-
-                if (targetX >= 0 && targetX < N && targetY >= 0 && targetY < N) {
-                    Cell targetCell = getCell(currentGrid, targetX, targetY);
-
-                    if (targetCell.type == 1) { // Only attack active cells
-                        if (cell.energy > 2 * targetCell.energy) {
-                            cell.energy += targetCell.energy / 4; // Consume 25% of the target's energy
-                        }
-                        else {
-                            cell.energy -= cell.energy / 4; // Lose 25% of energy
-                        }
-                    }
-                }
-                break;
-            }
-
-
-
-            for (int i = 0; i < 8; ++i) {
+            int sharedEnergyAcumulated = 0;
+            int numberSharedEnergy = 0;
+            for (int i = 0; i < 8 && cell.type != 0; ++i) {
                 int neighborX = getNeighborX(x, i);
                 int neighborY = getNeighborY(y, i);
 
@@ -203,19 +121,20 @@ __global__ void cellularAutomatonKernel(Cell* currentGrid, Cell* nextGrid, curan
                     if (neighborCell.type == 1) {
                         int command = cell.genes[cell.activatedGene];
                         cell.activatedGene = (cell.activatedGene + 1) % GENES_SIZE;
-
+                        int targetX = 0;
+                            int targetY = 0;
                         switch (command)
                         {
                         case 16:
                             cell.energy += neighborCell.energy / 9;
                             break;
                         case 17: // New attack command
-                            int targetX = getNeighborX(neighborX, neighborCell.rotation);
-                            int targetY = getNeighborY(neighborY, neighborCell.rotation);
+                            targetX = getNeighborX(neighborX, neighborCell.rotation);
+                            targetY = getNeighborY(neighborY, neighborCell.rotation);
 
                             if (targetX == x && targetY == y) { // Check if the target is the current cell
 
-                                if (neighborCell.energy > 2 * cell.energy) {
+                                if (neighborCell.energy > 2 * cell.energy + 250) {
                                     cell.energy = 0;
                                     cell.type = 0;
                                 }
@@ -223,20 +142,141 @@ __global__ void cellularAutomatonKernel(Cell* currentGrid, Cell* nextGrid, curan
                                     cell.energy -= cell.energy / 4; // Lose 25% of energy
                                 }
                             }
+                        case 18:
+                            targetX = getNeighborX(neighborX, neighborCell.rotation);
+                            targetY = getNeighborY(neighborY, neighborCell.rotation);
+
+                            if (targetX == x && targetY == y) { // Check if the target is the current cell
+                                sharedEnergyAcumulated += neighborCell.energy;
+                                ++numberSharedEnergy;
+                            }
+                            break;
                         }
                     }
 
                 }
             }
 
-            //age mutation
-            cell.energy -= 1;
 
 
             // Check energy depletion
-            if (cell.energy <= 0) {
+            if (cell.energy <= 0 || cell.type == 0) {
                 cell.type = 0;
                 cell.energy = 0;
+            }
+            else
+            {
+                int neighborX = 0;
+                int neighborY = 0;
+
+                if (numberSharedEnergy > 0)
+                {
+                    cell.energy = (cell.energy + sharedEnergyAcumulated) / (numberSharedEnergy + 1);
+                }
+
+                switch (command)
+                {
+                case 8:
+                    cell.energy += 25;
+                    break;
+                case 9:
+                    // Change activatedGene based on neighbor's status
+                    neighborX = getNeighborX(x, cell.rotation);
+                    neighborY = getNeighborY(y, cell.rotation);
+
+                    if (neighborX >= 0 && neighborX < N && neighborY >= 0 && neighborY < N) {
+                        Cell neighborCell = getCell(currentGrid, neighborX, neighborY);
+                        if (neighborCell.type == 1) {
+                            if (genesAreSimilar(&cell, &neighborCell))
+                            {
+                                cell.activatedGene = cell.genes[(cell.activatedGene) % GENES_SIZE]; // Move to next gene
+                            }
+                            else
+                            {
+                                cell.activatedGene = cell.genes[(cell.activatedGene + 1) % GENES_SIZE]; // Move to next gene
+                            }
+                        }
+                        else {
+                            cell.activatedGene = cell.genes[(cell.activatedGene + 2) % GENES_SIZE]; // Skip next gene (wrap around)
+                        }
+                    }
+                    break;
+
+                case 10:
+                    // Change rotation based on gene value
+                    int geneValue = cell.genes[cell.activatedGene];
+                    cell.rotation = (cell.rotation + geneValue) % 8;
+                    cell.activatedGene = (cell.activatedGene + 1) % GENES_SIZE;
+                    break;
+                case 11:
+                    // Change rotation based on gene value
+                    cell.rotation = (cell.genes[cell.activatedGene]) % 8;
+                    cell.activatedGene = (cell.activatedGene + 1) % GENES_SIZE;
+                    break;
+                case 12:
+                    // Change activatedGene based on neighbor's status
+                    neighborX = getNeighborX(x, cell.rotation);
+                    neighborY = getNeighborY(y, cell.rotation);
+
+                    if (neighborX >= 0 && neighborX < N && neighborY >= 0 && neighborY < N) {
+                        Cell neighborCell = getCell(currentGrid, neighborX, neighborY);
+                        if (neighborCell.type == 1) {
+                            if (neighborCell.energy > cell.genes[(cell.activatedGene) % GENES_SIZE] * MAX_ENERGY / COMMAND_NUMBER)
+                            {
+                                cell.activatedGene = cell.genes[(cell.activatedGene + 1) % GENES_SIZE]; // Move to next gene
+                            }
+                            else
+                            {
+                                cell.activatedGene = cell.genes[(cell.activatedGene + 2) % GENES_SIZE]; // Move to next gene
+                            }
+                        }
+                        else {
+                            cell.activatedGene = cell.genes[(cell.activatedGene + 3) % GENES_SIZE]; // Skip next gene (wrap around)
+                        }
+                    }
+
+                    break;
+                case 16:
+                    cell.energy /= 9;
+                    break;
+                case 17: // New attack command
+                    int targetX = getNeighborX(x, cell.rotation);
+                    int targetY = getNeighborY(y, cell.rotation);
+
+                    if (targetX >= 0 && targetX < N && targetY >= 0 && targetY < N) {
+                        Cell targetCell = getCell(currentGrid, targetX, targetY);
+
+                        if (targetCell.type == 1) { // Only attack active cells
+                            if (cell.energy > 2 * targetCell.energy + 250) {
+                                cell.energy += targetCell.energy / 4; // Consume 25% of the target's energy
+                            }
+                            else {
+                                cell.energy -= cell.energy / 4; // Lose 25% of energy
+                            }
+                        }
+                    }
+                    break;
+                case 18:
+                    // Change activatedGene based on neighbor's status
+                    neighborX = getNeighborX(x, cell.rotation);
+                    neighborY = getNeighborY(y, cell.rotation);
+
+                    if (neighborX >= 0 && neighborX < N && neighborY >= 0 && neighborY < N) {
+                        Cell neighborCell = getCell(currentGrid, neighborX, neighborY);
+                        if (neighborCell.type == 1) {
+                            cell.energy = (cell.energy + neighborCell.energy) / 2;
+                            cell.activatedGene = cell.genes[(cell.activatedGene) % GENES_SIZE]; // Skip next gene (wrap around)
+
+                        }
+                        else {
+                            cell.activatedGene = cell.genes[(cell.activatedGene + 1) % GENES_SIZE]; // Skip next gene (wrap around)
+                        }
+                    }
+                    break;
+                }
+
+                //age mutation
+                cell.energy -= 1;
             }
         }
         else if (cell.type == 0) {
@@ -383,7 +423,7 @@ int main(int argc, char* argv[]) {
     cudaMallocManaged(&nextGrid, N * N * sizeof(Cell));
     cudaMalloc(&devStates, N * N * sizeof(curandState));
 
-    dim3 threadsPerBlock(16, 16);
+    dim3 threadsPerBlock(32, 32);
     dim3 numBlocks((N + threadsPerBlock.x - 1) / threadsPerBlock.x, (N + threadsPerBlock.y - 1) / threadsPerBlock.y);
     setup_kernel << <numBlocks, threadsPerBlock >> > (devStates, time(NULL));
     cudaDeviceSynchronize();
