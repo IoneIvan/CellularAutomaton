@@ -6,11 +6,22 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define N 256 // Size of the grid (NxN)
-#define CELL_SIZE 2 // Size of each cell in pixels
+
+#include <iostream>
+#include <fstream>
+#include <sys/stat.h> // For mkdir on POSIX systems
+#include <filesystem> // For create_directory on C++17
+
+#include <chrono>
+
+using namespace std;
+
+
+#define N 128 // Size of the grid (NxN)
+#define CELL_SIZE 4 // Size of each cell in pixels
 #define WINDOW_SIZE (N * CELL_SIZE)
 #define MAX_ENERGY 1000
-#define GENES_SIZE 10
+#define GENES_SIZE 5
 #define COMMAND_NUMBER 20
 
 struct Cell {
@@ -189,15 +200,15 @@ __global__ void cellularAutomatonKernel(Cell* currentGrid, Cell* nextGrid, curan
                         if (neighborCell.type == 1) {
                             if (genesAreSimilar(&cell, &neighborCell))
                             {
-                                cell.activatedGene = cell.genes[(cell.activatedGene) % GENES_SIZE]; // Move to next gene
+                                cell.activatedGene = cell.genes[(cell.activatedGene + 1) % GENES_SIZE]; // Move to next gene
                             }
                             else
                             {
-                                cell.activatedGene = cell.genes[(cell.activatedGene + 1) % GENES_SIZE]; // Move to next gene
+                                cell.activatedGene = cell.genes[(cell.activatedGene + 2) % GENES_SIZE]; // Move to next gene
                             }
                         }
                         else {
-                            cell.activatedGene = cell.genes[(cell.activatedGene + 2) % GENES_SIZE]; // Skip next gene (wrap around)
+                            cell.activatedGene = cell.genes[(cell.activatedGene + 3) % GENES_SIZE]; // Skip next gene (wrap around)
                         }
                     }
                     break;
@@ -276,6 +287,9 @@ __global__ void cellularAutomatonKernel(Cell* currentGrid, Cell* nextGrid, curan
                 }
 
                 //age mutation
+                if (getRandomValue(globalState, x, y) < 0.0001) { // chance to mutate a gene
+                    cell.genes[(int)(getRandomValue(globalState, x, y) * GENES_SIZE)] = (int)(getRandomValue(globalState, x, y) * COMMAND_NUMBER);
+                }
                 cell.energy -= 1;
             }
         }
@@ -283,6 +297,8 @@ __global__ void cellularAutomatonKernel(Cell* currentGrid, Cell* nextGrid, curan
 
             // Reproduction for cells of type 0
             Cell potentialParents[8];
+            Cell bestParent;
+            bestParent.energy = 0;
             int parentCount = 0;
 
             for (int i = 0; i < 8; ++i) {
@@ -294,17 +310,20 @@ __global__ void cellularAutomatonKernel(Cell* currentGrid, Cell* nextGrid, curan
 
                     if (neighborCell.type == 1 && neighborCell.energy >= MAX_ENERGY && neighborCell.rotation == (i + 4) % 8) {
                         potentialParents[parentCount++] = neighborCell;
+                        if (bestParent.energy < neighborCell.energy)
+                        {
+                            bestParent = neighborCell;
+                        }
                     }
                 }
             }
 
             if (parentCount > 0) {
                 Cell chosenParent = potentialParents[(int)(getRandomValue(globalState, x, y) * parentCount)];
-                cell = chosenParent;
+                cell = bestParent;
                 cell.energy /= 2;
-                cell.rotation = (int)(getRandomValue(globalState, x, y) * 8); // Random rotation between 0 and 7
 
-                if (getRandomValue(globalState, x, y) < 0.1) { // chance to mutate a gene
+                if (getRandomValue(globalState, x, y) < 0.15) { // chance to mutate a gene
                     cell.genes[(int)(getRandomValue(globalState, x, y) * GENES_SIZE)] = (int)(getRandomValue(globalState, x, y) * COMMAND_NUMBER);
                 }
                 setCell(nextGrid, x, y, cell);
@@ -414,6 +433,76 @@ void renderGrid(SDL_Renderer* renderer, Cell* grid) {
 
     SDL_RenderPresent(renderer);
 }
+void renderGridEnergy(SDL_Renderer* renderer, Cell* grid) {
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+    int energy = 0;
+    for (int y = 0; y < N; ++y) {
+        for (int x = 0; x < N; ++x) {
+                // Calculate the green component based on the cell's energy level
+                energy = (grid[y * N + x].energy * 255) / MAX_ENERGY;
+                energy = energy < 0 ? 0 : energy > 255 ? 255 : energy; // Clamp between 0 and 255           
+
+                energy = grid[y * N + x].type ? energy : 0; // Set blue to 255 if alive, 0 if dead
+            
+
+            SDL_SetRenderDrawColor(renderer, 0, energy, 0, 255);
+            SDL_Rect cell;
+            cell.x = x * CELL_SIZE;
+            cell.y = y * CELL_SIZE;
+            cell.w = CELL_SIZE;
+            cell.h = CELL_SIZE;
+            SDL_RenderFillRect(renderer, &cell);
+        }
+    }
+
+    SDL_RenderPresent(renderer);
+}
+void renderGridFamilies(SDL_Renderer* renderer, Cell* grid) {
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+
+    for (int y = 0; y < N; ++y) {
+        for (int x = 0; x < N; ++x) {
+
+            int red = 0;
+            int green = 0;
+            int blue = 0;
+            red = (grid[y * N + x].genes[GENES_SIZE - 1] * 255) / COMMAND_NUMBER;
+            green = (grid[y * N + x].genes[GENES_SIZE - 2] * 255) / COMMAND_NUMBER;
+            blue = (grid[y * N + x].genes[GENES_SIZE - 3] * 255) / COMMAND_NUMBER;
+            
+            SDL_SetRenderDrawColor(renderer, red, green, blue, 255);
+            SDL_Rect cell;
+            cell.x = x * CELL_SIZE;
+            cell.y = y * CELL_SIZE;
+            cell.w = CELL_SIZE;
+            cell.h = CELL_SIZE;
+            SDL_RenderFillRect(renderer, &cell);
+        }
+    }
+    SDL_RenderPresent(renderer);
+}
+
+
+void saveGridImage(SDL_Renderer* renderer, const char* path, int nameID) {
+    char filename[256];  // Assuming a reasonable max path length
+
+    // Create filename with path and imageNumber
+    sprintf(filename, "%s/%d.bmp", path, nameID);
+
+    SDL_Surface* surface = SDL_CreateRGBSurface(0, N * CELL_SIZE, N * CELL_SIZE, 32, 0, 0, 0, 0);
+    if (surface) {
+        SDL_RenderReadPixels(renderer, NULL, SDL_PIXELFORMAT_ARGB8888, surface->pixels, surface->pitch);
+        SDL_SaveBMP(surface, filename);  // Save as BMP
+        SDL_FreeSurface(surface);
+    }
+    else {
+        fprintf(stderr, "Failed to create surface: %s\n", SDL_GetError());
+    }
+}
+
+
 
 int main(int argc, char* argv[]) {
     Cell* currentGrid;
@@ -423,7 +512,7 @@ int main(int argc, char* argv[]) {
     cudaMallocManaged(&nextGrid, N * N * sizeof(Cell));
     cudaMalloc(&devStates, N * N * sizeof(curandState));
 
-    dim3 threadsPerBlock(32, 32);
+    dim3 threadsPerBlock(16, 16);
     dim3 numBlocks((N + threadsPerBlock.x - 1) / threadsPerBlock.x, (N + threadsPerBlock.y - 1) / threadsPerBlock.y);
     setup_kernel << <numBlocks, threadsPerBlock >> > (devStates, time(NULL));
     cudaDeviceSynchronize();
@@ -480,9 +569,44 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+
+    string saveImages;
+    cout << "Do you want to save the images? (yes/no): ";
+    cin >> saveImages;
+
+        string path;
+    if (saveImages == "y") {
+        cout << "Enter the path where you want to save the images: ";
+        cin >> path;
+
+        // Check if the directory exists
+        struct stat info;
+        if (stat(path.c_str(), &info) != 0) {
+            // Directory does not exist. Create it.
+            cout << "Creating directory: " << path << endl;
+
+            // CUDA-aware directory creation using CUDA API
+            cudaError_t cudaStatus = cudaDeviceSynchronize();
+            if (cudaStatus != cudaSuccess) {
+                cerr << "CUDA error: " << cudaGetErrorString(cudaStatus) << endl;
+                return 1;
+            }
+
+           
+
+        }
+        
+        cout << "Images will be saved in: " << path << endl;
+        // Now you can save your images in 'path'
+    }
+    else {
+        cout << "Images will not be saved." << endl;
+    }
+
     bool quit = false;
     SDL_Event event;
     int count = 0;
+    int bmpCount = 0;
     int skipFrames = 10;
     while (!quit) {
         while (SDL_PollEvent(&event)) {
@@ -515,28 +639,62 @@ int main(int argc, char* argv[]) {
                 }
             }
         }
+        auto start = std::chrono::high_resolution_clock::now();
         cellularAutomatonKernel << <numBlocks, threadsPerBlock >> > (currentGrid, nextGrid, devStates);
         cudaDeviceSynchronize();
+        auto stop = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        std::cout << "" << duration.count() << " microseconds" << std::endl;
+
 
 
         Cell* temp = currentGrid;
         currentGrid = nextGrid;
         nextGrid = temp;
 
-        cellularAutomatonGravityKernel << <numBlocks, threadsPerBlock >> > (currentGrid, nextGrid, devStates);
+     /*   cellularAutomatonGravityKernel << <numBlocks, threadsPerBlock >> > (currentGrid, nextGrid, devStates);
         cudaDeviceSynchronize();
 
         temp = currentGrid;
         currentGrid = nextGrid;
-        nextGrid = temp;
+        nextGrid = temp;*/
+
+        
+        ++bmpCount;
+            static string energyPath = path + "\\energy";
+            static string familiesPath = path + "\\families";
+        if (!(bmpCount % 200))
+        {
+
+            renderGridEnergy(renderer, currentGrid);
+
+            saveGridImage(renderer, energyPath.c_str(), bmpCount);
+
+            renderGridFamilies(renderer, currentGrid);
+
+            saveGridImage(renderer, familiesPath.c_str(), bmpCount);
+            //renderGrid(renderer, currentGrid);
+
+            // Save rendered grid as an image
+
+        }
+        if (bmpCount % 10000 < 20)
+        {
+            renderGridEnergy(renderer, currentGrid);
+            saveGridImage(renderer, energyPath.c_str(), -bmpCount);
+        }
 
         ++count;
         if (!(count % skipFrames))
         {
-            renderGrid(renderer, currentGrid);
+
+            //renderGrid(renderer, currentGrid);
+            // Save rendered grid as an image
             count = 0;
         }
+        
     }
+    cudaDeviceSynchronize();
 
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
