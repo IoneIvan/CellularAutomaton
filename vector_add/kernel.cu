@@ -21,7 +21,7 @@
 #define N 128 // Size of the grid
 #define CELL_SIZE 5 // Size of each cell
 #define WINDOW_SIZE (N * CELL_SIZE) // Size of the window
-#define MAX_ENERGY 255 // Maximum energy for cells
+#define MAX_ENERGY 200 // Maximum energy for cells
 #define INITIAL_ENERGY (MAX_ENERGY/10) // Initial energy for cells
 #define GRAPH_WIDTH 256 // Width of the graph
 #define GRAPH_HEIGHT (N*5) // Height of the graph
@@ -35,6 +35,7 @@ struct Cell {
     uint8_t genes[GENES_COUNT];
     uint8_t activeGene;
     uint8_t output;
+    uint8_t score;
 };
 struct Coordinates {
     int x;
@@ -213,6 +214,7 @@ __global__ void cellularAutomatonKernel(uint8_t* correct_output, Cell* grid, Cel
         }
         else
         {
+            //cell.output = 0;
             setCell(nextGrid, x, y, cell);
             return;
         }
@@ -230,25 +232,25 @@ __global__ void cellularAutomatonKernel(uint8_t* correct_output, Cell* grid, Cel
             break;
         
         case 2:
-            cell.output = cell.genes[(++cell.activeGene) % GENES_COUNT];
+            cell.output = cell.genes[(++cell.activeGene) % GENES_COUNT] * (256/ACTIONS_COUT);
             break;
         case 3:
-            cell.output = (cell.output + cell.genes[(++cell.activeGene) % GENES_COUNT] - 128) % sizeof(cell.output);
+            cell.output = (cell.output + cell.genes[(++cell.activeGene) % GENES_COUNT] * (256 / ACTIONS_COUT) - 128) % sizeof(cell.output);
             break;
         case 4:
             cell.output = (cell.output + lookingAtNeighbor(grid, x, y).output - 128) % sizeof(cell.output);
             break;
         case 5:
-            cell.output = curand(&state) % 255;
+            //cell.output = curand(&state) % 255;
             break;
-        case 6:
-            cell.output = 0;
         case 10:
             //cell.energy += 1;
             break;
         }
         uint8_t outputCell = getOutput(correct_output, x, y);
       
+        cell.score = (cell.score / 16 + (255 - abs(outputCell - cell.output)) / 16) / 2;
+
         cell.energy += (255 - abs(outputCell - cell.output))/51;
         
 
@@ -290,7 +292,7 @@ void renderGrid(SDL_Renderer* renderer, Cell* grid) {
 
     SDL_RenderPresent(renderer);
 }
-void renderGridOutput(SDL_Renderer* renderer, Cell* grid, uint8_t* output) {
+void renderGridCellOutput(SDL_Renderer* renderer, Cell* grid, uint8_t* output) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
 
@@ -307,6 +309,29 @@ void renderGridOutput(SDL_Renderer* renderer, Cell* grid, uint8_t* output) {
                 rect.h = CELL_SIZE;
                 SDL_RenderFillRect(renderer, &rect);
             
+
+        }
+    }
+
+    SDL_RenderPresent(renderer);
+}
+void renderGridOutput(SDL_Renderer* renderer, Cell* grid, uint8_t* output) {
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+
+    for (int y = 0; y < N; ++y) {
+        for (int x = 0; x < N; ++x) {
+            uint8_t outpt = output[y * N + x];
+
+
+            SDL_SetRenderDrawColor(renderer, outpt, outpt, outpt, 255); // Green for energy
+            SDL_Rect rect;
+            rect.x = x * CELL_SIZE;
+            rect.y = y * CELL_SIZE;
+            rect.w = CELL_SIZE;
+            rect.h = CELL_SIZE;
+            SDL_RenderFillRect(renderer, &rect);
+
 
         }
     }
@@ -572,7 +597,7 @@ int main(int argc, char* argv[]) {
     uint32_t lastTime = SDL_GetTicks();
     uint32_t frameCount = 0;
     bool isRender = true;
-    bool showOutput = false;
+    int menuType = 0;
     while (!quit) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -599,7 +624,7 @@ int main(int argc, char* argv[]) {
                 }
                 if (event.key.keysym.sym == SDLK_s)
                 {
-                    showOutput = !showOutput;
+                    menuType = (++menuType)%3;
                 }
             }
         }
@@ -614,10 +639,19 @@ int main(int argc, char* argv[]) {
         nextGrid = tmp;
         if (isRender)
         {
-            if(showOutput)
-                renderGridOutput(energyRenderer, grid, correct_output);
-            else
+            switch (menuType)
+            {case 0:
                 renderGrid(energyRenderer, grid);
+                break;
+            case 1:
+                renderGridCellOutput(energyRenderer, grid, correct_output);
+                break;
+            case 2:
+                renderGridOutput(energyRenderer, grid, correct_output);
+                break;
+            default:
+                break;
+            }
             renderRotationGrid(rotationRenderer, grid);
             renderGraph(graphRenderer, grid); // Render the graph
         }
