@@ -228,26 +228,29 @@ __global__ void cellularAutomatonKernel(uint8_t* correct_output, Cell* grid, Cel
         case 1:
             cell.rotation = (cell.rotation + cell.genes[(++cell.activeGene) % GENES_COUNT]) % 9; // Random rotation between 0 and 8
             break;
-
+        
         case 2:
-            cell.output = cell.genes[(++cell.activeGene) % GENES_COUNT] * (255 / ACTIONS_COUT);
+            cell.output = cell.genes[(++cell.activeGene) % GENES_COUNT];
             break;
         case 3:
-            cell.output = (cell.output + cell.genes[(++cell.activeGene) % GENES_COUNT] * (255 / ACTIONS_COUT) - 128) % sizeof(cell.output);
+            cell.output = (cell.output + cell.genes[(++cell.activeGene) % GENES_COUNT] - 128) % sizeof(cell.output);
             break;
         case 4:
             cell.output = (cell.output + lookingAtNeighbor(grid, x, y).output - 128) % sizeof(cell.output);
             break;
-
+        case 5:
+            cell.output = curand(&state) % 255;
+            break;
+        case 6:
+            cell.output = 0;
         case 10:
-            cell.energy += 1;
+            //cell.energy += 1;
             break;
         }
-
-        if (cell.output == getOutput(correct_output, x,y))
-        {
-            cell.energy += 5;
-        }
+        uint8_t outputCell = getOutput(correct_output, x, y);
+      
+        cell.energy += (255 - abs(outputCell - cell.output))/51;
+        
 
         setCell(nextGrid, x, y, cell);
     }
@@ -296,11 +299,7 @@ void renderGridOutput(SDL_Renderer* renderer, Cell* grid, uint8_t* output) {
             Cell cell = grid[y * N + x];
 
 
-            
-                Uint8 rotation = (8 - cell.rotation) * 32;
-                //Uint8 output = cell.output%sizeof(cell.output);
-            
-                SDL_SetRenderDrawColor(renderer, 0, output[y * N + x], 0, 255); // Green for energy
+                SDL_SetRenderDrawColor(renderer, cell.output, cell.output, cell.output, 255); // Green for energy
                 SDL_Rect rect;
                 rect.x = x * CELL_SIZE;
                 rect.y = y * CELL_SIZE;
@@ -351,7 +350,7 @@ void renderGraph(SDL_Renderer* renderer, Cell* grid) {
     // Calculate energy distribution
     for (int i = 0; i < N * N; ++i) {
         int energy = grid[i].energy;
-        if (energy >= 0) {
+        if (energy >= 0 && energy < MAX_ENERGY * 8) {
             energyDistribution[energy]++;
         }
     }
