@@ -6,6 +6,18 @@
 #include <time.h>
 #include <curand_kernel.h>
 #include <stdint.h>
+
+#include <iostream>
+#include <fstream>
+#include <cstdint>
+#include <string>
+
+#include <iostream>
+#include <vector>
+#include <cstdint>
+#include <fstream>
+#include <sstream>
+
 #define N 128 // Size of the grid
 #define CELL_SIZE 5 // Size of each cell
 #define WINDOW_SIZE (N * CELL_SIZE) // Size of the window
@@ -15,12 +27,23 @@
 #define GRAPH_HEIGHT (N*5) // Height of the graph
 #define PIXEL_PER_UNIT 1 // Pixels per unit in the graph
 
+#define GENES_COUNT 4
+#define ACTIONS_COUT 16
 struct Cell {
     uint16_t energy;
     uint8_t rotation;
+    uint8_t genes[GENES_COUNT];
+    uint8_t activeGene;
+    uint8_t output;
 };
-
+struct Coordinates {
+    int x;
+    int y;
+};
 __device__ Cell getCell(Cell* grid, int x, int y) {
+    return grid[y * N + x];
+}
+__device__ uint8_t getOutput(uint8_t* grid, int x, int y) {
     return grid[y * N + x];
 }
 
@@ -57,9 +80,103 @@ __device__ int countFacingNeighbors(Cell* grid, int x, int y, int rotation, int 
     }
     return count;
 }
+__device__ int poorNeighbor(Cell* grid, int x, int y, float rand)
+{
+    uint16_t minEnergy = 0xFFFF;
+    Coordinates result = { -1, -1 }; // Initialize with invalid coordinates
+    for (int i = -1; i <= 1; ++i) {
+        for (int j = -1; j <= 1; ++j) {
+            if (i == 0 && j == 0) continue; // Skip the current cell
+            int neighborX = (x + i + N) % N; // Wrap around
+            int neighborY = (y + j + N) % N; // Wrap around
+            Cell neighbor = getCell(grid, neighborX, neighborY);
+
+            if (neighbor.energy == minEnergy)
+            {
+                if (rand < (1.0 / 8.0))
+                {
+                    result.x = neighborX;
+                    result.y = neighborY;
+                }
+            }
+            else if (neighbor.energy < minEnergy)
+            {
+                minEnergy = neighbor.energy;
+                result.x = neighborX;
+                result.y = neighborY;
+            }
+        }
+    }
+
+    return minEnergy; // Return the coordinates
+}
+__device__ Coordinates reproduceNeighbor(Cell* grid, int x, int y, int rand)
+{
+    uint16_t maxEnergy = 0x0000;
+    Coordinates result = { -2, -2 }; // Initialize with invalid coordinates
+
+    for (int i = -1; i <= 1; ++i) {
+        for (int j = -1; j <= 1; ++j) {
+            if (i == 0 && j == 0) continue; // Skip the current cell
+            int neighborX = (x + i + N) % N; // Wrap around
+            int neighborY = (y + j + N) % N; // Wrap around
+            Cell neighbor = getCell(grid, neighborX, neighborY);
+            Cell cell = getCell(grid, x, y);
 
 
-__global__ void cellularAutomatonKernel(Cell* grid, Cell* nextGrid, unsigned long long seed, int taxes) {
+            if (neighbor.energy >= MAX_ENERGY && neighbor.energy > 2 * cell.energy)
+            {
+                if (neighbor.energy == maxEnergy)
+                {
+                    if (rand % 8 == 0)
+                    {
+                        result.x = neighborX;
+                        result.y = neighborY;
+                    }
+                }
+                else if (neighbor.energy > maxEnergy)
+                {
+                    maxEnergy = neighbor.energy;
+                    result.x = neighborX;
+                    result.y = neighborY;
+                }
+            }
+        }
+    }
+
+    return result; // Return the coordinates
+}
+__device__ Cell lookingAtNeighbor(Cell* grid, int x, int y)
+{
+   
+    Cell cell = getCell(grid, x, y);
+
+    // Determine the rotation direction of the neighbor
+    int facingDirection = cell.rotation % 8; // Neighbor's rotation facing direction
+    int nx = 0, ny = 0;
+    switch (facingDirection)
+    {
+    case 0:
+        nx = 0; ny = -1;
+    case 1:
+        nx = 1; ny = -1;
+    case 2:
+        nx = 1; ny = 0;
+    case 3:
+        nx = 1; ny = 1;
+    case 4:
+        nx = 0; ny = 1;
+    case 5:
+        nx = -1; ny = 1;
+    case 6:
+        nx = -1; ny = 0;
+    case 7:
+        nx = -1; ny = -1;
+    }
+    return getCell(grid, -nx, -ny);
+}
+
+__global__ void cellularAutomatonKernel(uint8_t* correct_output, Cell* grid, Cell* nextGrid, unsigned long long seed, int taxes) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -68,21 +185,71 @@ __global__ void cellularAutomatonKernel(Cell* grid, Cell* nextGrid, unsigned lon
     curand_init(seed, y * N + x, 0, &state); // Unique seed for each thread
 
     if (x < N && y < N) {
-        Cell currentCell = getCell(grid, x, y);
+        Cell cell = getCell(grid, x, y);
+
+        if (cell.energy >= MAX_ENERGY)
+        {
+            if (poorNeighbor(grid, x, y, curand(&state)) * 2 > cell.energy)
+            {
+                cell.energy = 0;
+            }
+            else
+            {
+                cell.energy /= 2;
+            }
+        }
+        Coordinates repCord = reproduceNeighbor(grid, x, y, curand(&state));
+        if (repCord.x != -2)
+        {
+            cell = getCell(grid, repCord.x, repCord.y);
+            if(curand(&state) % 4 == 0)
+                cell.genes[curand(&state) % GENES_COUNT] = curand(&state) % ACTIONS_COUT;
+            cell.energy /= 2;
+        }
 
         // Energy Loss
-        if (currentCell.energy > 0) {
-            currentCell.energy-=1 + currentCell.energy/ taxes;
+        if (cell.energy > 0) {
+            cell.energy -= 1 + cell.energy / taxes;
+        }
+        else
+        {
+            setCell(nextGrid, x, y, cell);
+            return;
         }
 
         // Energy Gain
-        int facingNeighbors = countFacingNeighbors(grid, x, y, currentCell.rotation, taxes);
-        currentCell.energy += facingNeighbors;
+        int facingNeighbors = countFacingNeighbors(grid, x, y, cell.rotation, taxes);
+        cell.energy += facingNeighbors;
+        switch (cell.genes[(++cell.activeGene) % GENES_COUNT])
+        {
+        case 0:
+            cell.rotation = curand(&state) % 9; // Random rotation between 0 and 8
+            break;
+        case 1:
+            cell.rotation = (cell.rotation + cell.genes[(++cell.activeGene) % GENES_COUNT]) % 9; // Random rotation between 0 and 8
+            break;
 
-        // Random Rotation
-        currentCell.rotation = curand(&state) % 9; // Random rotation between 0 and 8
+        case 2:
+            cell.output = cell.genes[(++cell.activeGene) % GENES_COUNT] * (255 / ACTIONS_COUT);
+            break;
+        case 3:
+            cell.output = (cell.output + cell.genes[(++cell.activeGene) % GENES_COUNT] * (255 / ACTIONS_COUT) - 128) % sizeof(cell.output);
+            break;
+        case 4:
+            cell.output = (cell.output + lookingAtNeighbor(grid, x, y).output - 128) % sizeof(cell.output);
+            break;
 
-        setCell(nextGrid, x, y, currentCell);
+        case 10:
+            cell.energy += 1;
+            break;
+        }
+
+        if (cell.output == getOutput(correct_output, x,y))
+        {
+            cell.energy += 5;
+        }
+
+        setCell(nextGrid, x, y, cell);
     }
 }
 
@@ -120,7 +287,34 @@ void renderGrid(SDL_Renderer* renderer, Cell* grid) {
 
     SDL_RenderPresent(renderer);
 }
-// Function to render the grid based on rotation
+void renderGridOutput(SDL_Renderer* renderer, Cell* grid, uint8_t* output) {
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+
+    for (int y = 0; y < N; ++y) {
+        for (int x = 0; x < N; ++x) {
+            Cell cell = grid[y * N + x];
+
+
+            
+                Uint8 rotation = (8 - cell.rotation) * 32;
+                //Uint8 output = cell.output%sizeof(cell.output);
+            
+                SDL_SetRenderDrawColor(renderer, 0, output[y * N + x], 0, 255); // Green for energy
+                SDL_Rect rect;
+                rect.x = x * CELL_SIZE;
+                rect.y = y * CELL_SIZE;
+                rect.w = CELL_SIZE;
+                rect.h = CELL_SIZE;
+                SDL_RenderFillRect(renderer, &rect);
+            
+
+        }
+    }
+
+    SDL_RenderPresent(renderer);
+}
+
 void renderRotationGrid(SDL_Renderer* renderer, Cell* grid) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
@@ -143,8 +337,6 @@ void renderRotationGrid(SDL_Renderer* renderer, Cell* grid) {
 
     SDL_RenderPresent(renderer);
 }
-
-// Function to render the graph
 void renderGraph(SDL_Renderer* renderer, Cell* grid) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // Black background
     SDL_RenderClear(renderer);
@@ -187,19 +379,107 @@ void resetCells(Cell* grid)
     // Initialize the grid with initial energy and random rotation
     for (int y = 0; y < N; ++y) {
         for (int x = 0; x < N; ++x) {
-            grid[y * N + x].energy = INITIAL_ENERGY;
+            //grid[y * N + x].energy = INITIAL_ENERGY;
+            if (rand() % 5 == 0)
+                grid[y * N + x].energy = rand() % INITIAL_ENERGY;
+            else
+                grid[y * N + x].energy = 0;
             grid[y * N + x].rotation = rand() % 8; // Random rotation between 0 and 7
+            for (int i = 0; i < GENES_COUNT; ++i)
+            {
+                grid[y * N + x].genes[i] = rand() % ACTIONS_COUT;
+            }
+            grid[y * N + x].activeGene = 0;
         }
     }
 }
+
+
+
+// This function is a placeholder for loading the image
+// In real scenarios, you would need a library like stb_image or OpenCV
+bool loadImage(const std::string& path, std::vector<uint8_t>& imageData, int& width, int& height) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open the file " << path << std::endl;
+        return false;
+    }
+
+    // Read the header
+    std::string header;
+    file >> header;
+    if (header != "P6") {
+        std::cerr << "Error: Only P6 PPM format is supported" << std::endl;
+        return false;
+    }
+
+    // Read width, height, and maximum color value
+    file >> width >> height;
+    int maxColorValue;
+    file >> maxColorValue;
+    if (maxColorValue != 255) {
+        std::cerr << "Error: Only 8-bit color PPM format is supported" << std::endl;
+        return false;
+    }
+
+    // Skip the newline character after the header
+    file.ignore(1);
+
+    // Allocate memory for image data
+    imageData.resize(width * height * 3);
+
+    // Read pixel data
+    file.read(reinterpret_cast<char*>(imageData.data()), imageData.size());
+    if (!file) {
+        std::cerr << "Error: Unexpected end of file" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+void setOutput(uint8_t * output) {
+    std::string path;
+    std::cout << "Enter the path to the PNG or JPEG image: ";
+    std::cin >> path;
+
+    // Placeholder for image data
+    std::vector<uint8_t> imageData;
+    int width, height;
+
+    // Load the image
+    if (!loadImage(path, imageData, width, height)) {
+        std::cerr << "Failed to load the image." << std::endl;
+        return;
+    }
+
+    // Ensure the image fits within NxN
+    if (width < N || height < N) {
+        std::cerr << "Image is too small; it must be at least " << N << "x" << N << " pixels." << std::endl;
+        return;
+    }
+
+    // Extract the red channel values and store them in the output array
+    for (int y = 0; y < N; ++y) {
+        for (int x = 0; x < N; ++x) {
+            // Assuming imageData is in RGB format
+            output[y * N + x] = imageData[(y * width + x) * 3];  // Red channel
+        }
+    }
+}
+
+
+
 int main(int argc, char* argv[]) {
+    uint8_t* correct_output;
     Cell* grid;
     Cell* nextGrid;
+    cudaMallocManaged(&correct_output, N * N * sizeof(uint8_t));
     cudaMallocManaged(&grid, N * N * sizeof(Cell));
     cudaMallocManaged(&nextGrid, N * N * sizeof(Cell));
 
     int taxes = MAX_ENERGY; // Initialize taxes
-
+    setOutput(correct_output);
     resetCells(grid);
 
     if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -293,6 +573,7 @@ int main(int argc, char* argv[]) {
     uint32_t lastTime = SDL_GetTicks();
     uint32_t frameCount = 0;
     bool isRender = true;
+    bool showOutput = false;
     while (!quit) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -311,17 +592,22 @@ int main(int argc, char* argv[]) {
                 }
                 else if (event.key.keysym.sym == SDLK_r) {
                     resetCells(grid);
+                    setOutput(correct_output);
                 }
                 if (event.key.keysym.sym == SDLK_a)
                 {
                     isRender = !isRender;
+                }
+                if (event.key.keysym.sym == SDLK_s)
+                {
+                    showOutput = !showOutput;
                 }
             }
         }
 
         ++frameCount;
         uint32_t seed = time(NULL) + frameCount;
-        cellularAutomatonKernel << <numBlocks, threadsPerBlock >> > (grid, nextGrid, seed, taxes);
+        cellularAutomatonKernel << <numBlocks, threadsPerBlock >> > (correct_output, grid, nextGrid, seed, taxes);
         cudaDeviceSynchronize();
 
         Cell* tmp = grid;
@@ -329,7 +615,10 @@ int main(int argc, char* argv[]) {
         nextGrid = tmp;
         if (isRender)
         {
-            renderGrid(energyRenderer, grid);
+            if(showOutput)
+                renderGridOutput(energyRenderer, grid, correct_output);
+            else
+                renderGrid(energyRenderer, grid);
             renderRotationGrid(rotationRenderer, grid);
             renderGraph(graphRenderer, grid); // Render the graph
         }
