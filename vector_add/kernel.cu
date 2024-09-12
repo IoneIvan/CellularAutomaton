@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <curand_kernel.h>
-
+#include <stdint.h>
 #define N 128 // Size of the grid
 #define CELL_SIZE 5 // Size of each cell
 #define WINDOW_SIZE (N * CELL_SIZE) // Size of the window
@@ -16,8 +16,8 @@
 #define PIXEL_PER_UNIT 1 // Pixels per unit in the graph
 
 struct Cell {
-    int energy;
-    int rotation;
+    uint16_t energy;
+    uint8_t rotation;
 };
 
 __device__ Cell getCell(Cell* grid, int x, int y) {
@@ -290,7 +290,9 @@ int main(int argc, char* argv[]) {
     SDL_Event event;
 
     unsigned long long seed = time(NULL); // Seed for random number generation
+    uint32_t lastTime = SDL_GetTicks();
     uint32_t frameCount = 0;
+    bool isRender = true;
     while (!quit) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -302,28 +304,46 @@ int main(int argc, char* argv[]) {
                     printf("Current taxes: %d\n", taxes); // Print current taxes
                 }
                 else if (event.key.keysym.sym == SDLK_w) {
-                    taxes--; // Decrease taxes
+                   
+                    if(taxes > 2)
+                        taxes--; // Decrease taxes
                     printf("Current taxes: %d\n", taxes); // Print current taxes
                 }
-                else if (event.key.keysym.sym == SDLK_r)
-                {
+                else if (event.key.keysym.sym == SDLK_r) {
                     resetCells(grid);
+                }
+                if (event.key.keysym.sym == SDLK_a)
+                {
+                    isRender = !isRender;
                 }
             }
         }
+
         ++frameCount;
-        seed = time(NULL) + frameCount;
+        uint32_t seed = time(NULL) + frameCount;
         cellularAutomatonKernel << <numBlocks, threadsPerBlock >> > (grid, nextGrid, seed, taxes);
         cudaDeviceSynchronize();
 
         Cell* tmp = grid;
         grid = nextGrid;
         nextGrid = tmp;
+        if (isRender)
+        {
+            renderGrid(energyRenderer, grid);
+            renderRotationGrid(rotationRenderer, grid);
+            renderGraph(graphRenderer, grid); // Render the graph
+        }
+       
 
-        renderGrid(energyRenderer, grid);
-        renderRotationGrid(rotationRenderer, grid);
-        renderGraph(graphRenderer, grid); // Render the graph
-        //SDL_Delay(100); // Delay for 100ms
+        // Calculate and print the frequency every second
+        uint32_t currentTime = SDL_GetTicks();
+        if (currentTime - lastTime >= 1000) { // If a second has passed
+            printf("Loop executed %d times in the last second.\n", frameCount);
+            frameCount = 0; // Reset frame count
+            lastTime = currentTime; // Reset last time
+        }
+
+        // SDL_Delay(100); // Delay for 100ms
     }
 
     SDL_DestroyRenderer(energyRenderer);
