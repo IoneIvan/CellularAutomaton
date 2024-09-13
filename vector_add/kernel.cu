@@ -21,30 +21,42 @@
 #define N 128 // Size of the grid
 #define CELL_SIZE 5 // Size of each cell
 #define WINDOW_SIZE (N * CELL_SIZE) // Size of the window
-#define MAX_ENERGY 200 // Maximum energy for cells
-#define INITIAL_ENERGY (MAX_ENERGY/10) // Initial energy for cells
+#define INITIAL_ENERGY (200) // Initial energy for cells
 #define GRAPH_WIDTH 256 // Width of the graph
 #define GRAPH_HEIGHT (N*5) // Height of the graph
 #define PIXEL_PER_UNIT 1 // Pixels per unit in the graph
 
-#define GENES_COUNT 4
-#define ACTIONS_COUT 16
+#define INPUTS_COUNT 4
+#define OUTPUT_COUNT 3
+
 struct Cell {
     uint16_t energy;
-    uint8_t rotation;
-    uint8_t genes[GENES_COUNT];
-    uint8_t activeGene;
-    uint8_t output;
-    uint8_t score;
+    float neuronLayer[INPUTS_COUNT * OUTPUT_COUNT * OUTPUT_COUNT];
+    uint8_t output[OUTPUT_COUNT];
 };
 struct Coordinates {
     int x;
     int y;
 };
+struct Pixel {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+};
 __device__ Cell getCell(Cell* grid, int x, int y) {
     return grid[y * N + x];
 }
-__device__ uint8_t getOutput(uint8_t* grid, int x, int y) {
+__device__ Cell getCell(Cell* grid, int x, int y, int r) {
+
+    if (r == 0) ++x;
+    if (r == 1) --x;
+    if (r == 2) ++y;
+    if (r == 3) --y;
+
+    return grid[y * N + x];
+}
+
+__device__ Pixel getOutput(Pixel* grid, int x, int y) {
     return grid[y * N + x];
 }
 
@@ -52,64 +64,29 @@ __device__ void setCell(Cell* grid, int x, int y, Cell value) {
     grid[y * N + x] = value;
 }
 
-__device__ int countFacingNeighbors(Cell* grid, int x, int y, int rotation, int taxes) {
-    int count = 0;
-    for (int i = -1; i <= 1; ++i) {
-        for (int j = -1; j <= 1; ++j) {
-            if (i == 0 && j == 0) continue; // Skip the current cell
-            int neighborX = (x + i + N) % N; // Wrap around
-            int neighborY = (y + j + N) % N; // Wrap around
-            Cell neighbor = getCell(grid, neighborX, neighborY);
-
-            if (neighbor.energy == 0) continue;
-            
-            // Determine the rotation direction of the neighbor
-            int neighborFacingDirection = neighbor.rotation % 8; // Neighbor's rotation facing direction
-
-            // Check if the neighbor is facing the current cell
-            if ((i == 0 && j == -1 && neighborFacingDirection == 0) || // Up
-                (i == 1 && j == -1 && neighborFacingDirection == 1) || // Up-Right
-                (i == 1 && j == 0 && neighborFacingDirection == 2) || // Right
-                (i == 1 && j == 1 && neighborFacingDirection == 3) || // Down-Right
-                (i == 0 && j == 1 && neighborFacingDirection == 4) || // Down
-                (i == -1 && j == 1 && neighborFacingDirection == 5) || // Down-Left
-                (i == -1 && j == 0 && neighborFacingDirection == 6) || // Left
-                (i == -1 && j == -1 && neighborFacingDirection == 7)) { // Up-Left
-                count += 1 + neighbor.energy / taxes;
-            }
-        }
-    }
-    return count;
-}
-__device__ int poorNeighbor(Cell* grid, int x, int y, float rand)
+__device__ uint8_t poorNeighbor(Cell* grid, int x, int y)
 {
-    uint16_t minEnergy = 0xFFFF;
+    uint8_t poorCells = 0;
     Coordinates result = { -1, -1 }; // Initialize with invalid coordinates
     for (int i = -1; i <= 1; ++i) {
         for (int j = -1; j <= 1; ++j) {
+
             if (i == 0 && j == 0) continue; // Skip the current cell
+
             int neighborX = (x + i + N) % N; // Wrap around
             int neighborY = (y + j + N) % N; // Wrap around
-            Cell neighbor = getCell(grid, neighborX, neighborY);
 
-            if (neighbor.energy == minEnergy)
+            Cell neighbor = getCell(grid, neighborX, neighborY);
+            Cell cell = getCell(grid, x, y);
+
+            if (neighbor.energy < cell.energy)
             {
-                if (rand < (1.0 / 8.0))
-                {
-                    result.x = neighborX;
-                    result.y = neighborY;
-                }
-            }
-            else if (neighbor.energy < minEnergy)
-            {
-                minEnergy = neighbor.energy;
-                result.x = neighborX;
-                result.y = neighborY;
+                ++poorCells;
             }
         }
     }
 
-    return minEnergy; // Return the coordinates
+    return poorCells; // Return the coordinates
 }
 __device__ Coordinates reproduceNeighbor(Cell* grid, int x, int y, int rand)
 {
@@ -125,12 +102,13 @@ __device__ Coordinates reproduceNeighbor(Cell* grid, int x, int y, int rand)
             Cell cell = getCell(grid, x, y);
 
 
-            if (neighbor.energy >= MAX_ENERGY && neighbor.energy > 2 * cell.energy)
+            if (neighbor.energy > cell.energy)
             {
                 if (neighbor.energy == maxEnergy)
                 {
                     if (rand % 8 == 0)
                     {
+                        maxEnergy = neighbor.energy;
                         result.x = neighborX;
                         result.y = neighborY;
                     }
@@ -147,37 +125,8 @@ __device__ Coordinates reproduceNeighbor(Cell* grid, int x, int y, int rand)
 
     return result; // Return the coordinates
 }
-__device__ Cell lookingAtNeighbor(Cell* grid, int x, int y)
-{
-   
-    Cell cell = getCell(grid, x, y);
 
-    // Determine the rotation direction of the neighbor
-    int facingDirection = cell.rotation % 8; // Neighbor's rotation facing direction
-    int nx = 0, ny = 0;
-    switch (facingDirection)
-    {
-    case 0:
-        nx = 0; ny = -1;
-    case 1:
-        nx = 1; ny = -1;
-    case 2:
-        nx = 1; ny = 0;
-    case 3:
-        nx = 1; ny = 1;
-    case 4:
-        nx = 0; ny = 1;
-    case 5:
-        nx = -1; ny = 1;
-    case 6:
-        nx = -1; ny = 0;
-    case 7:
-        nx = -1; ny = -1;
-    }
-    return getCell(grid, -nx, -ny);
-}
-
-__global__ void cellularAutomatonKernel(uint8_t* correct_output, Cell* grid, Cell* nextGrid, unsigned long long seed, int taxes) {
+__global__ void cellularAutomatonKernel(Pixel* correct_output, Cell* grid, Cell* nextGrid, unsigned long long seed, int taxes) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -188,77 +137,74 @@ __global__ void cellularAutomatonKernel(uint8_t* correct_output, Cell* grid, Cel
     if (x < N && y < N) {
         Cell cell = getCell(grid, x, y);
 
-        if (cell.energy >= MAX_ENERGY)
-        {
-            if (poorNeighbor(grid, x, y, curand(&state)) * 2 > cell.energy)
-            {
-                cell.energy = 0;
-            }
-            else
-            {
-                cell.energy /= 2;
-            }
-        }
+        //get populated
         Coordinates repCord = reproduceNeighbor(grid, x, y, curand(&state));
         if (repCord.x != -2)
         {
             cell = getCell(grid, repCord.x, repCord.y);
-            if(curand(&state) % 4 == 0)
-                cell.genes[curand(&state) % GENES_COUNT] = curand(&state) % ACTIONS_COUT;
+            if (curand(&state) % 4 == 0)
+            {
+                float randomValue = curand_uniform(&state);
+                cell.neuronLayer[curand(&state) % (INPUTS_COUNT * OUTPUT_COUNT * OUTPUT_COUNT)] = randomValue - 0.5;
+            }
             cell.energy /= 2;
         }
+      
 
-        // Energy Loss
-        if (cell.energy > 0) {
-            cell.energy -= 1 + cell.energy / taxes;
-        }
-        else
+        // stop doing anything when dead
+        if (cell.energy == 0)
         {
-            //cell.output = 0;
             setCell(nextGrid, x, y, cell);
             return;
         }
 
-        // Energy Gain
-        int facingNeighbors = countFacingNeighbors(grid, x, y, cell.rotation, taxes);
-        cell.energy += facingNeighbors;
-        switch (cell.genes[(++cell.activeGene) % GENES_COUNT])
-        {
-        case 0:
-            cell.rotation = curand(&state) % 9; // Random rotation between 0 and 8
-            break;
-        case 1:
-            cell.rotation = (cell.rotation + cell.genes[(++cell.activeGene) % GENES_COUNT]) % 9; // Random rotation between 0 and 8
-            break;
-        
-        case 2:
-            cell.output = cell.genes[(++cell.activeGene) % GENES_COUNT] * (256/ACTIONS_COUT);
-            break;
-        case 3:
-            cell.output = (cell.output + cell.genes[(++cell.activeGene) % GENES_COUNT] * (256 / ACTIONS_COUT) - 128) % sizeof(cell.output);
-            break;
-        case 4:
-            cell.output = (cell.output + lookingAtNeighbor(grid, x, y).output - 128) % sizeof(cell.output);
-            break;
-        case 5:
-            //cell.output = curand(&state) % 255;
-            break;
-        case 10:
-            //cell.energy += 1;
-            break;
-        }
-        uint8_t outputCell = getOutput(correct_output, x, y);
-      
-        cell.score = (cell.score / 16 + (255 - abs(outputCell - cell.output)) / 16) / 2;
+        //divide energy by the amout of cells that has energy less the half of this cell energy.
+        cell.energy /= 2;
 
-        cell.energy += (255 - abs(outputCell - cell.output))/51;
         
+        
+        //calculate output
+        for (int i = 0; i < OUTPUT_COUNT; ++i) {
+            cell.output[i] = 0;
+            for (int j = 0; j < INPUTS_COUNT; ++j) {
+                for (int k = 0; k < OUTPUT_COUNT; ++k) {
+                    // Calculate the 1D index
+                    int index = i * INPUTS_COUNT * OUTPUT_COUNT + j * OUTPUT_COUNT + k;
+                    cell.output[i] += cell.neuronLayer[index] * getCell(grid, x, y, j).output[k];
+                }
+            }
+        }
+
+
+        //update energy
+        Pixel outputCell = getOutput(correct_output, x, y);
+
+        int error = abs(outputCell.r - cell.output[0]);
+        error += abs(outputCell.g - cell.output[1]);
+        error += abs(outputCell.b - cell.output[2]);
+
+        cell.energy = (3*sizeof(uint8_t) - error);
+
+
+        float spendEnergy = 0;
+        // Initialize the array with some values (for demonstration)
+        for (int i = 0; i < OUTPUT_COUNT; ++i) {
+            for (int j = 0; j < INPUTS_COUNT; ++j) {
+                for (int k = 0; k < OUTPUT_COUNT; ++k) {
+                    // Calculate the 1D index
+                    int index = i * INPUTS_COUNT * OUTPUT_COUNT + j * OUTPUT_COUNT + k;
+                    spendEnergy += abs(cell.neuronLayer[index]);
+                }
+            }
+        }
+        //spendEnergy = 10;
+        //cell.energy = cell.energy > 1 + spendEnergy ? cell.energy - 1 - spendEnergy : 0;
 
         setCell(nextGrid, x, y, cell);
     }
 }
 
-void renderGrid(SDL_Renderer* renderer, Cell* grid) {
+void renderGridCellOutput(SDL_Renderer* renderer, Cell* grid) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
 
@@ -266,65 +212,28 @@ void renderGrid(SDL_Renderer* renderer, Cell* grid) {
         for (int x = 0; x < N; ++x) {
             Cell cell = grid[y * N + x];
 
-
-            if (cell.energy > 0) {
-
-                Uint8 rotation = (8 - cell.rotation) * 32;
-                Uint8 energy = cell.energy < MAX_ENERGY ? cell.energy * (255 / MAX_ENERGY) : 255;
-                Uint8 superRich = cell.energy >= MAX_ENERGY ? (cell.energy - MAX_ENERGY) * (255 / MAX_ENERGY) : 0;
-                Uint8 megaRch = 0;
-                if (superRich > 255) 
-                {
-                    superRich = 255;
-                    megaRch = 255;
-                }
-                SDL_SetRenderDrawColor(renderer, superRich, energy, megaRch, 255); // Green for energy
-                SDL_Rect rect;
-                rect.x = x * CELL_SIZE;
-                rect.y = y * CELL_SIZE;
-                rect.w = CELL_SIZE;
-                rect.h = CELL_SIZE;
-                SDL_RenderFillRect(renderer, &rect);
-            }
-
+            SDL_SetRenderDrawColor(renderer, cell.output[0], cell.output[1], cell.output[2], 255); // Green for energy
+            SDL_Rect rect;
+            rect.x = x * CELL_SIZE;
+            rect.y = y * CELL_SIZE;
+            rect.w = CELL_SIZE;
+            rect.h = CELL_SIZE;
+            SDL_RenderFillRect(renderer, &rect);
         }
     }
 
     SDL_RenderPresent(renderer);
 }
-void renderGridCellOutput(SDL_Renderer* renderer, Cell* grid, uint8_t* output) {
+void renderGridOutput(SDL_Renderer* renderer, Pixel* output) {
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
     SDL_RenderClear(renderer);
 
     for (int y = 0; y < N; ++y) {
         for (int x = 0; x < N; ++x) {
-            Cell cell = grid[y * N + x];
+            Pixel outpt = output[y * N + x];
 
 
-                SDL_SetRenderDrawColor(renderer, cell.output, cell.output, cell.output, 255); // Green for energy
-                SDL_Rect rect;
-                rect.x = x * CELL_SIZE;
-                rect.y = y * CELL_SIZE;
-                rect.w = CELL_SIZE;
-                rect.h = CELL_SIZE;
-                SDL_RenderFillRect(renderer, &rect);
-            
-
-        }
-    }
-
-    SDL_RenderPresent(renderer);
-}
-void renderGridOutput(SDL_Renderer* renderer, Cell* grid, uint8_t* output) {
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-
-    for (int y = 0; y < N; ++y) {
-        for (int x = 0; x < N; ++x) {
-            uint8_t outpt = output[y * N + x];
-
-
-            SDL_SetRenderDrawColor(renderer, outpt, outpt, outpt, 255); // Green for energy
+            SDL_SetRenderDrawColor(renderer, outpt.r, outpt.g, outpt.b, 255); // Green for energy
             SDL_Rect rect;
             rect.x = x * CELL_SIZE;
             rect.y = y * CELL_SIZE;
@@ -339,81 +248,33 @@ void renderGridOutput(SDL_Renderer* renderer, Cell* grid, uint8_t* output) {
     SDL_RenderPresent(renderer);
 }
 
-void renderRotationGrid(SDL_Renderer* renderer, Cell* grid) {
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-
-    for (int y = 0; y < N; ++y) {
-        for (int x = 0; x < N; ++x) {
-            Cell cell = grid[y * N + x];
-
-            // Use rotation to determine color (for example, using rotation value)
-            Uint8 rotationColor = (cell.rotation * 32) % 256; // Example color based on rotation
-            SDL_SetRenderDrawColor(renderer, rotationColor, 0, 0, 255); // Blue for rotation
-            SDL_Rect rect;
-            rect.x = x;
-            rect.y = y;
-            rect.w = 1;
-            rect.h = 1;
-            SDL_RenderFillRect(renderer, &rect);
-        }
-    }
-
-    SDL_RenderPresent(renderer);
-}
-void renderGraph(SDL_Renderer* renderer, Cell* grid) {
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // Black background
-    SDL_RenderClear(renderer);
-
-    // Draw axes
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); // Black for axes
-    SDL_RenderDrawLine(renderer, 50, GRAPH_HEIGHT, 50, 0); // Y-axis
-    SDL_RenderDrawLine(renderer, 0, GRAPH_HEIGHT, GRAPH_WIDTH + 50, GRAPH_HEIGHT); // X-axis
-
-    int energyDistribution[MAX_ENERGY * 8] = { 0 };
-
-    // Calculate energy distribution
-    for (int i = 0; i < N * N; ++i) {
-        int energy = grid[i].energy;
-        if (energy >= 0 && energy < MAX_ENERGY * 8) {
-            energyDistribution[energy]++;
-        }
-    }
-
-    // Draw bars for energy distribution
-    for (int x = 0; x < MAX_ENERGY * 8; ++x) {
-        int barHeight = energyDistribution[x]/2; // Height of the bar
-        int y = GRAPH_HEIGHT - barHeight; // Y position for the top of the bar
-        SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255); // Red for energy bars
-
-        // Draw the bar as a rectangle
-        SDL_Rect barRect;
-        barRect.x = 50 + x; // X position
-        barRect.y = y; // Y position
-        barRect.w = 1; // Width of the bar
-        barRect.h = barHeight; // Height of the bar
-        SDL_RenderFillRect(renderer, &barRect); // Fill the rectangle to create the bar
-    }
-
-    SDL_RenderPresent(renderer);
-}
 
 void resetCells(Cell* grid)
 {
     // Initialize the grid with initial energy and random rotation
     for (int y = 0; y < N; ++y) {
         for (int x = 0; x < N; ++x) {
-            //grid[y * N + x].energy = INITIAL_ENERGY;
+            // Randomly assign energy
             if (rand() % 5 == 0)
-                grid[y * N + x].energy = rand() % INITIAL_ENERGY;
+                grid[y * N + x].energy = static_cast<float>(rand()) / RAND_MAX * INITIAL_ENERGY; // Random float
             else
-                grid[y * N + x].energy = 0;
-            grid[y * N + x].rotation = rand() % 8; // Random rotation between 0 and 7
-            for (int i = 0; i < GENES_COUNT; ++i)
-            {
-                grid[y * N + x].genes[i] = rand() % ACTIONS_COUT;
+                grid[y * N + x].energy = 0.0f;
+
+            // Calculate output
+            for (int i = 0; i < OUTPUT_COUNT; ++i) {
+                for (int j = 0; j < INPUTS_COUNT; ++j) {
+                    for (int k = 0; k < OUTPUT_COUNT; ++k) {
+                        // Calculate the 1D index
+                        int index = i * INPUTS_COUNT * OUTPUT_COUNT + j * OUTPUT_COUNT + k;
+                        // Assign a random float value between -1.0 and 1.0 to neuronLayer
+                        grid[y * N + x].neuronLayer[index] = static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f; // Random float between -1.0 and 1.0
+                    }
+                }
             }
-            grid[y * N + x].activeGene = 0;
+            for (int i = 0; i < 3; ++i)
+            {
+                grid[y * N + x].output[i] = rand() % 256;
+            }
         }
     }
 }
@@ -462,7 +323,7 @@ bool loadImage(const std::string& path, std::vector<uint8_t>& imageData, int& wi
     return true;
 }
 
-void setOutput(uint8_t * output) {
+void setOutput(Pixel* output) {
     std::string path;
     std::cout << "Enter the path to the PNG or JPEG image: ";
     std::cin >> path;
@@ -483,11 +344,14 @@ void setOutput(uint8_t * output) {
         return;
     }
 
-    // Extract the red channel values and store them in the output array
+    // Extract the RGB channel values and store them in the output array
     for (int y = 0; y < N; ++y) {
         for (int x = 0; x < N; ++x) {
             // Assuming imageData is in RGB format
-            output[y * N + x] = imageData[(y * width + x) * 3];  // Red channel
+            int index = (y * width + x) * 3; // Calculate the index for the RGB values
+            output[y * N + x].r = imageData[index];        // Red channel
+            output[y * N + x].g = imageData[index + 1];    // Green channel
+            output[y * N + x].b = imageData[index + 2];    // Blue channel
         }
     }
 }
@@ -495,14 +359,13 @@ void setOutput(uint8_t * output) {
 
 
 int main(int argc, char* argv[]) {
-    uint8_t* correct_output;
+    Pixel* correct_output;
     Cell* grid;
     Cell* nextGrid;
-    cudaMallocManaged(&correct_output, N * N * sizeof(uint8_t));
+    cudaMallocManaged(&correct_output, N * N * sizeof(Pixel));
     cudaMallocManaged(&grid, N * N * sizeof(Cell));
     cudaMallocManaged(&nextGrid, N * N * sizeof(Cell));
 
-    int taxes = MAX_ENERGY; // Initialize taxes
     setOutput(correct_output);
     resetCells(grid);
 
@@ -532,59 +395,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Create the second window for rotation
-    SDL_Window* rotationWindow = SDL_CreateWindow("Cell Rotation",
-        SDL_WINDOWPOS_UNDEFINED,
-        SDL_WINDOWPOS_UNDEFINED,
-        N,
-        N,
-        SDL_WINDOW_SHOWN);
-    if (!rotationWindow) {
-        fprintf(stderr, "Could not create rotation window: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(energyRenderer);
-        SDL_DestroyWindow(energyWindow);
-        SDL_Quit();
-        return 1;
-    }
-
-    SDL_Renderer* rotationRenderer = SDL_CreateRenderer(rotationWindow, -1, SDL_RENDERER_ACCELERATED);
-    if (!rotationRenderer) {
-        fprintf(stderr, "Could not create rotation renderer: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(energyRenderer);
-        SDL_DestroyWindow(energyWindow);
-        SDL_DestroyWindow(rotationWindow);
-        SDL_Quit();
-        return 1;
-    }
-
-    // Create the third window for the graph
-    SDL_Window* graphWindow = SDL_CreateWindow("Energy Graph",
-        SDL_WINDOWPOS_UNDEFINED,
-        SDL_WINDOWPOS_UNDEFINED,
-        GRAPH_WIDTH + 100, // Extra space for y-axis
-        GRAPH_HEIGHT,
-        SDL_WINDOW_SHOWN);
-    if (!graphWindow) {
-        fprintf(stderr, "Could not create graph window: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(energyRenderer);
-        SDL_DestroyWindow(energyWindow);
-        SDL_DestroyRenderer(rotationRenderer);
-        SDL_DestroyWindow(rotationWindow);
-        SDL_Quit();
-        return 1;
-    }
-
-    SDL_Renderer* graphRenderer = SDL_CreateRenderer(graphWindow, -1, SDL_RENDERER_ACCELERATED);
-    if (!graphRenderer) {
-        fprintf(stderr, "Could not create graph renderer: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(energyRenderer);
-        SDL_DestroyWindow(energyWindow);
-        SDL_DestroyRenderer(rotationRenderer);
-        SDL_DestroyWindow(rotationWindow);
-        SDL_DestroyWindow(graphWindow);
-        SDL_Quit();
-        return 1;
-    }
+   
 
     dim3 threadsPerBlock(16, 16);
     dim3 numBlocks((N + threadsPerBlock.x - 1) / threadsPerBlock.x,
@@ -604,17 +415,7 @@ int main(int argc, char* argv[]) {
                 quit = true;
             }
             else if (event.type == SDL_KEYDOWN) {
-                if (event.key.keysym.sym == SDLK_e) {
-                    taxes++; // Increase taxes
-                    printf("Current taxes: %d\n", taxes); // Print current taxes
-                }
-                else if (event.key.keysym.sym == SDLK_w) {
-                   
-                    if(taxes > 2)
-                        taxes--; // Decrease taxes
-                    printf("Current taxes: %d\n", taxes); // Print current taxes
-                }
-                else if (event.key.keysym.sym == SDLK_r) {
+                if (event.key.keysym.sym == SDLK_r) {
                     resetCells(grid);
                     setOutput(correct_output);
                 }
@@ -624,14 +425,14 @@ int main(int argc, char* argv[]) {
                 }
                 if (event.key.keysym.sym == SDLK_s)
                 {
-                    menuType = (++menuType)%3;
+                    menuType = (++menuType)%2;
                 }
             }
         }
 
         ++frameCount;
         uint32_t seed = time(NULL) + frameCount;
-        cellularAutomatonKernel << <numBlocks, threadsPerBlock >> > (correct_output, grid, nextGrid, seed, taxes);
+        cellularAutomatonKernel << <numBlocks, threadsPerBlock >> > (correct_output, grid, nextGrid, seed, 0);
         cudaDeviceSynchronize();
 
         Cell* tmp = grid;
@@ -641,19 +442,14 @@ int main(int argc, char* argv[]) {
         {
             switch (menuType)
             {case 0:
-                renderGrid(energyRenderer, grid);
+                renderGridCellOutput(energyRenderer, grid);
                 break;
             case 1:
-                renderGridCellOutput(energyRenderer, grid, correct_output);
-                break;
-            case 2:
-                renderGridOutput(energyRenderer, grid, correct_output);
+                renderGridOutput(energyRenderer, correct_output);
                 break;
             default:
                 break;
             }
-            renderRotationGrid(rotationRenderer, grid);
-            renderGraph(graphRenderer, grid); // Render the graph
         }
        
 
@@ -670,10 +466,6 @@ int main(int argc, char* argv[]) {
 
     SDL_DestroyRenderer(energyRenderer);
     SDL_DestroyWindow(energyWindow);
-    SDL_DestroyRenderer(rotationRenderer);
-    SDL_DestroyWindow(rotationWindow);
-    SDL_DestroyRenderer(graphRenderer);
-    SDL_DestroyWindow(graphWindow);
     SDL_Quit();
 
     cudaFree(grid);
